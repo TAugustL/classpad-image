@@ -1,0 +1,8 @@
+[package]
+name = "c2p"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+image = { version = "0.25.2", default-features = false, features = ["png", "jpeg"] }
+miniz_oxide = { version = "0.8.0", default-features = false }
