@@ -1,4 +1,6 @@
-use c2p::{convert_c2b_to_imgs, convert_c2p_to_img, convert_img_to_c2b, convert_img_to_c2p};
+use classpad_image::{
+    convert_c2b_to_imgs, convert_c2p_to_img, convert_img_to_c2b, convert_img_to_c2p,
+};
 use std::{env::args, error::Error};
 
 fn main() -> Result<(), Box<dyn Error>> {
