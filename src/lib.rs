@@ -1,22 +1,116 @@
+//! Image converter for the Casio fx-CP400 calculator.
+//!
+//! Provides functions to convert an image with a common format (PNG, JPG, WEBP, BMP) into a C2P file, or multiple image files into a C2B animation file.
+//! Also provides functions to convert C2P and C2B files back into more common formats.
+
 use image::{GenericImageView, Pixel};
 use std::error::Error;
 
+/// The largest possible image width on the fx-CP400.
+/// MAX_IMAGE_WIDTH is equal to 310 (0x136).
 pub const MAX_IMAGE_WIDTH: u32 = 0x136; // 310
+
+/// The largest possible image height on the fx-CP400.
+/// MAX_IMAGE_HEIGHT is equal to 401 (0x191).
 pub const MAX_IMAGE_HEIGHT: u32 = 0x191; // 401
 
-pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
-    let image = image::ImageReader::open(image_path)
-        .expect("failed to open image!")
+/// Function to convert an image to C2B.
+///
+/// Takes two arguments: a vector of image paths, which must point to valid image files with PNG, JPG, WEBP or BMP format.
+/// At least two images must be supplied.
+/// The second argument is the destination of the C2B file.
+///
+/// Example:
+/// ```
+/// let paths: Vec<String> = vec![String::from("path/to/file1.png"), String::from("path/to/file2.png")];
+/// convert_img_to_c2b(paths, String::from("path/to/destination.c2b")).unwrap();
+/// ```
+pub fn convert_img_to_c2b(
+    image_paths: Vec<String>,
+    destination: String,
+) -> Result<(), Box<dyn Error>> {
+    if image_paths.len() < 2 {
+        eprintln!("At least two images have to be supplied!");
+        return Ok(());
+    }
+
+    let image = image::ImageReader::open(image_paths[0].clone())
+        .expect("Failed to open image!")
         .decode()
         .expect("Failed to decode image!");
-    let (width, height): (u32, u32) = (image.width(), image.height());
-
+    let (mut width, mut height): (u32, u32) = (image.width(), image.height());
+    (width, height) = fit_image_dimensions(width, height);
     assert!(width > 0 && height > 0);
+
+    let mut images_data: Vec<u8> = Vec::new();
+    for path in &image_paths {
+        let image = image::ImageReader::open(path)
+            .expect("Failed to open image!")
+            .decode()
+            .expect("Failed to decode image!");
+        let (i_width, i_height): (u32, u32) = (image.width(), image.height());
+        assert!(i_width > 0 && i_height > 0);
+
+        let image = if i_width > MAX_IMAGE_WIDTH || i_height > MAX_IMAGE_HEIGHT {
+            eprintln!("Image too big! scaling down...");
+            image.resize(width, height, image::imageops::FilterType::Lanczos3)
+        } else {
+            image
+        };
+
+        let img_data = bitmap_to_rgb565_data(image.clone());
+        let compressed_img_data = compress(img_data);
+
+        // Segment length
+        let f = compressed_img_data.len();
+        let f4 = f >> 24 & 0xFF;
+        let f3 = f >> 16 & 0xFF;
+        let f2 = f >> 8 & 0xFF;
+        let f1 = f & 0xFF;
+
+        images_data.extend_from_slice(&[f4 as u8, f3 as u8, f2 as u8, f1 as u8]);
+        images_data.extend_from_slice(&compressed_img_data);
+    }
+    let header = &get_c2b_header(
+        images_data.len(),
+        image_paths.len(),
+        width as usize,
+        height as usize,
+    );
+    let footer = &get_c2b_footer();
+    let mut new_file: Vec<u8> = Vec::new();
+
+    new_file.extend_from_slice(header);
+    new_file.extend_from_slice(&images_data);
+    new_file.extend_from_slice(footer);
+    std::fs::write(destination, new_file)?;
+
+    Ok(())
+}
+
+/// Function to convert an image to C2P.
+///
+/// Takes two arguments: an image path, which must point to a valid image file with PNG, JPG, WEBP or BMP format.
+/// The second argument is the destination of the C2P file.
+///
+/// Example:
+/// ```
+/// let path: &str = "path/to/file.png";
+/// convert_img_to_c2p(path, String::from("path/to/destination.c2p")).unwrap();
+/// ```
+pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
+    let image = image::ImageReader::open(image_path)
+        .expect("Failed to open image!")
+        .decode()
+        .expect("Failed to decode image!");
+    let (width, height): (u32, u32) = fit_image_dimensions(image.width(), image.height());
+    assert!(width > 0 && height > 0);
+
     let image = if width > MAX_IMAGE_WIDTH || height > MAX_IMAGE_HEIGHT {
-        eprintln!("image too big! scaling down...");
+        eprintln!("Image too big! scaling down...");
         let (new_width, new_height) = (
-            width / (width / MAX_IMAGE_WIDTH),
-            height / (height / MAX_IMAGE_HEIGHT),
+            (width / (width / MAX_IMAGE_WIDTH)).clamp(1, MAX_IMAGE_WIDTH),
+            (height / (height / MAX_IMAGE_HEIGHT)).clamp(1, MAX_IMAGE_HEIGHT),
         );
         image.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
     } else {
@@ -26,13 +120,13 @@ pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), B
     let img_data = bitmap_to_rgb565_data(image.clone());
     let compressed_img_data = compress(img_data);
 
-    let header = &get_header(
+    let header = &get_c2p_header(
         compressed_img_data.len(),
         image.width() as usize,
         image.height() as usize,
     );
 
-    let footer = &get_footer();
+    let footer = &get_c2p_footer();
 
     let mut new_file = Vec::new();
     new_file.extend_from_slice(header);
@@ -44,6 +138,154 @@ pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), B
     Ok(())
 }
 
+/// Function to convert a C2P image into a normal image file.
+///
+/// Takes two arguments: an image path, which must point to a valid C2P image.
+/// The second argument is the destination of the converted image file.
+///
+/// Example:
+/// ```
+/// let path: &str = "path/to/file.c2p";
+/// convert_c2p_to_img(path, String::from("path/to/destination.png")).unwrap();
+/// ```
+pub fn convert_c2p_to_img(c2p_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
+    let c2p_data: Vec<u8> = std::fs::read(c2p_path)?;
+    let (header, slice) = c2p_data.split_at(0xDC);
+    let (compressed_data, _footer) = slice.split_at(slice.len() - 0x17C);
+
+    let (width, height): (u32, u32) = (
+        ((header[0xC2] as u32) << 8) + header[0xC3] as u32,
+        ((header[0xC4] as u32) << 8) + header[0xC5] as u32,
+    );
+
+    let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(compressed_data)
+        .expect("Failed to decompress compressed c2p image data!");
+
+    let mut img_buffer = image::RgbImage::new(width, height);
+
+    let (mut x, mut y) = (0, 0);
+    for i in (0..bytes.len()).step_by(2) {
+        let pixel = img_buffer.get_pixel_mut(x, y);
+
+        let rgb565: u32 = ((bytes[i] as u32) << 8) + bytes[i + 1] as u32;
+
+        let r5 = rgb565 >> 11;
+        let g6 = (rgb565 >> 5) & 0b111111;
+        let b5 = rgb565 & 0b11111;
+
+        let r = (r5 as f32 / 31.0 * 255.0) as u8;
+        let g = (g6 as f32 / 63.0 * 255.0) as u8;
+        let b = (b5 as f32 / 31.0 * 255.0) as u8;
+
+        *pixel = image::Rgb::from([r, g, b]);
+
+        x += 1;
+        if x == img_buffer.width() {
+            x = 0;
+            y += 1
+        }
+    }
+
+    img_buffer.save(destination)?;
+    Ok(())
+}
+
+/// Function to convert a C2B image into a group of normal image file.
+///
+/// Takes two arguments: an image path, which must point to a valid C2B image.
+/// The second argument is the destination of the converted image files.
+/// All images following the first will be named after the first with their respective index.
+///
+/// Example:
+/// ```
+/// let path: &str = "path/to/file.c2b";
+/// convert_c2p_to_img(path, String::from("path/to/destination.png")).unwrap();
+/// ```
+pub fn convert_c2b_to_imgs(c2b_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
+    let c2b_data: Vec<u8> = std::fs::read(c2b_path)?;
+    let (header, data) = c2b_data.split_at(0xD8);
+
+    let (width, height): (u32, u32) = (
+        ((header[0xC2] as u32) << 8) + header[0xC3] as u32,
+        ((header[0xC4] as u32) << 8) + header[0xC5] as u32,
+    );
+
+    let mut image_block_len = (((data[0x00] as u32) << 24)
+        + ((data[0x01] as u32) << 16)
+        + ((data[0x02] as u32) << 8)
+        + (data[0x03] as u32)) as usize;
+    let mut offset: usize = 0x04;
+    let mut index: usize = 0;
+
+    while data[offset] == 0x78 && data[offset + 1] == 0x9C {
+        let (mut x, mut y) = (0, 0);
+        let mut img_buffer = image::RgbImage::new(width, height);
+        let data_buffer = &data[offset..offset + image_block_len];
+        let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(data_buffer)
+            .expect("Failed to decompress compressed c2p image data!");
+
+        for i in (0..bytes.len()).step_by(2) {
+            let pixel = img_buffer.get_pixel_mut(x, y);
+
+            let rgb565: u32 = ((bytes[i] as u32) << 8) + bytes[i + 1] as u32;
+
+            let r5 = rgb565 >> 11;
+            let g6 = (rgb565 >> 5) & 0b111111;
+            let b5 = rgb565 & 0b11111;
+
+            let r = (r5 as f32 / 31.0 * 255.0) as u8;
+            let g = (g6 as f32 / 63.0 * 255.0) as u8;
+            let b = (b5 as f32 / 31.0 * 255.0) as u8;
+
+            *pixel = image::Rgb::from([r, g, b]);
+
+            x += 1;
+            if x == img_buffer.width() {
+                x = 0;
+                y += 1
+            }
+        }
+
+        let tmp = image_block_len;
+        image_block_len = (((data[offset + image_block_len + 0x00] as u32) << 24)
+            + ((data[offset + image_block_len + 0x01] as u32) << 16)
+            + ((data[offset + image_block_len + 0x02] as u32) << 8)
+            + (data[offset + image_block_len + 0x03] as u32)) as usize;
+        offset += tmp + 4;
+
+        let (file_dest, ext) = destination.rsplit_once('.').unwrap();
+        let destination = format!("{file_dest}{index}.{ext}");
+        index += 1;
+
+        img_buffer.save(&destination)?;
+    }
+
+    Ok(())
+}
+
+/// Function to scale the initial image dimensions to fit into the maximum image scale.
+fn fit_image_dimensions(width: u32, height: u32) -> (u32, u32) {
+    let (mut new_width, mut new_height) = (width, height);
+
+    if width > MAX_IMAGE_WIDTH || height > MAX_IMAGE_HEIGHT {
+        eprintln!("Image too big! scaling down...");
+        if width < height {
+            let aspect_ratio: f32 = width as f32 / height as f32;
+            new_height = MAX_IMAGE_HEIGHT;
+            new_width = (aspect_ratio * new_height as f32) as u32;
+        } else {
+            let aspect_ratio: f32 = height as f32 / width as f32;
+            new_width = MAX_IMAGE_WIDTH;
+            new_height = (aspect_ratio * new_width as f32) as u32;
+        }
+
+        eprintln!("New size: {} x {}", new_width, new_height);
+    }
+
+    (new_width, new_height)
+}
+
+/// Function to convert the color data of the image into the RGB565 color format.
 fn bitmap_to_rgb565_data(image: image::DynamicImage) -> Vec<u8> {
     let mut image_data = Vec::new();
 
@@ -68,6 +310,7 @@ fn bitmap_to_rgb565_data(image: image::DynamicImage) -> Vec<u8> {
     image_data
 }
 
+/// Function that converts the given range to correctly display the bytes.
 fn convert_range(
     original_start: usize,
     original_end: usize,
@@ -79,12 +322,13 @@ fn convert_range(
     (new_start as f64 + ((value - original_start) as f64 * scale)) as usize
 }
 
+/// Compresses the given image data with the default zlib compression.
 fn compress(input: Vec<u8>) -> Vec<u8> {
-    use miniz_oxide::deflate::compress_to_vec_zlib;
-    compress_to_vec_zlib(&input, 6)
+    miniz_oxide::deflate::compress_to_vec_zlib(&input, 6)
 }
 
-fn get_header(image_data_size: usize, width: usize, height: usize) -> Vec<u8> {
+/// Function that returns the C2P file header, with certain bytes changed depending on the file size.
+fn get_c2p_header(image_data_size: usize, width: usize, height: usize) -> Vec<u8> {
     let file_size: usize = image_data_size + 0xDC + 0x17C; // image size + header size + footer size
     let a = !(file_size & 0xFFFFFF) & 0xFFFFFF;
     let a3 = (a >> 16 & 0xFF) as u8;
@@ -124,7 +368,7 @@ fn get_header(image_data_size: usize, width: usize, height: usize) -> Vec<u8> {
     let f2 = (f >> 8 & 0xFF) as u8;
     let f1 = (f & 0xFF) as u8;
 
-    return vec![
+    vec![
         0xBC, 0xBE, 0xAC, 0xB6, 0xB0, 0xFF, 0xFF, 0xFF, 0x9C, 0xCD, 0x8F, 0xFF, 0xFF, 0xFF, 0xFF,
         0xFF, 0xFF, 0xFE, 0xFF, 0xEF, 0xFF, 0xFE, 0xFF, a3, a2, a1, b1, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x43, 0x43, 0x30, 0x31, 0x30, 0x30, 0x43, 0x6F, 0x6C, 0x6F, 0x72, 0x43, 0x50, 0x00,
@@ -140,11 +384,13 @@ fn get_header(image_data_size: usize, width: usize, height: usize) -> Vec<u8> {
         0x30, 0x31, 0x30, 0x30, e4, e3, e2, e1, 0x00, 0x00, w2, w1, h2, h1, 0x00, 0x10, 0x00, 0xFF,
         0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, f4, f3,
         f2, f1,
-    ];
+    ]
 }
 
-fn get_footer() -> Vec<u8> {
-    return vec![
+/// Function that returns the C2P footer.
+/// This is the same for all C2P files.
+fn get_c2p_footer() -> Vec<u8> {
+    vec![
         0x30, 0x31, 0x30, 0x30, 0x00, 0x00, 0x00, 0x8C, 0x07, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x60, 0x00, 0x07, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x05,
@@ -171,5 +417,101 @@ fn get_footer() -> Vec<u8> {
         0x00, 0x10, 0x00, 0x03, 0x14, 0x15, 0x93, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00,
         0x03, 0x14, 0x15, 0x93, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0x01,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    ];
+    ]
+}
+
+/// Function that returns the C2B file header, with certain bytes changed depending on the file size.
+fn get_c2b_header(
+    image_data_size: usize,
+    total_image_count: usize,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    let file_size: usize = image_data_size + 0xD8 + 0x1A8; // image size + header size + footer size
+    let a = !(file_size & 0xFFFFFF) & 0xFFFFFF;
+    let a3 = (a >> 16 & 0xFF) as u8;
+    let a2 = (a >> 8 & 0xFF) as u8;
+    let a1 = (a & 0xFF) as u8;
+
+    let b1 = ((0x1D0 - (file_size & 0xFF)) & 0xFF) as u8;
+
+    let c = file_size - 0x20;
+    let c4 = (c >> 24 & 0xFF) as u8;
+    let c3 = (c >> 16 & 0xFF) as u8;
+    let c2 = (c >> 8 & 0xFF) as u8;
+    let c1 = (c & 0xFF) as u8;
+
+    let d = file_size - 0x260;
+    let d4 = (d >> 24 & 0xFF) as u8;
+    let d3 = (d >> 16 & 0xFF) as u8;
+    let d2 = (d >> 8 & 0xFF) as u8;
+    let d1 = (d & 0xFF) as u8;
+
+    let e = file_size - 0x280;
+    let e4 = (e >> 24 & 0xFF) as u8;
+    let e3 = (e >> 16 & 0xFF) as u8;
+    let e2 = (e >> 8 & 0xFF) as u8;
+    let e1 = (e & 0xFF) as u8;
+
+    let w = width & 0xFFFF;
+    let h = height & 0xFFFF;
+    let w2 = (w >> 8 & 0xFF) as u8;
+    let w1 = (w & 0xFF) as u8;
+    let h2 = (h >> 8 & 0xFF) as u8;
+    let h1 = (h & 0xFF) as u8;
+
+    let i = total_image_count as u8;
+
+    vec![
+        0xBC, 0xBE, 0xAC, 0xB6, 0xB0, 0xFF, 0xFF, 0xFF, 0x9C, 0xCD, 0x9D, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFE, 0xFF, 0xEF, 0xFF, 0xFE, 0xFF, a3, a2, a1, b1, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x43, 0x43, 0x30, 0x31, 0x30, 0x30, 0x43, 0x6F, 0x6C, 0x6F, 0x72, 0x43, 0x50, 0x00,
+        0x00, 0x00, c4, c3, c2, c1, 0x00, 0x00, 0x00, 0x92, 0x00, 0x00, 0x00, 0x00, d4, d3, d2, d1,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x7C, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x30, 0x31, 0x30, 0x30, e4, e3, e2, e1, 0x00, 0x00, w2, w1, h2, h1, 0x00, 0x10, 0x00, 0xFF,
+        0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x01, 0x00, i, 0xFF, 0xFF, 0xFF, 0xFF,
+    ]
+}
+
+/// Function that returns the C2B footer.
+/// Note: this is the same for all files in this program. There are certain bytes that change the size of the window in the 'Picture Plot' program, which are ignored here.
+fn get_c2b_footer() -> Vec<u8> {
+    vec![
+        0x30, 0x31, 0x30, 0x30, 0x00, 0x00, 0x00, 0x8C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x10, 0x01, 0x01, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x03,
+        0x24, 0x67, 0x53, 0x24, 0x67, 0x53, 0x25, 0x00, 0x00, 0x09, 0x97, 0x01, 0x02, 0x54, 0x71,
+        0x69, 0x81, 0x13, 0x21, 0x00, 0x00, 0x10, 0x01, 0x01, 0x07, 0x45, 0x28, 0x30, 0x18, 0x86,
+        0x79, 0x00, 0x00, 0x10, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x02, 0x35, 0x84, 0x90, 0x56, 0x60, 0x37, 0x74, 0x00, 0x00, 0x09, 0x97, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x28, 0x31, 0x85,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x06, 0x28, 0x32, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x09, 0x98, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x30, 0x31,
+        0x30, 0x30, 0xE0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x60, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x02, 0x50, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+        0x02, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10, 0x00, 0x02, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x01,
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0x07, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0x03, 0x14, 0x15, 0x93, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x03, 0x14, 0x15, 0x93, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10, 0x00, 0x03, 0x14, 0x15, 0x93, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00,
+        0x03, 0x14, 0x15, 0x93, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0x01,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x30, 0x31, 0x30, 0x30, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00,
+        0x50, 0x47, 0x54, 0x69, 0x6D, 0x65, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x09, 0x99,
+    ]
 }
