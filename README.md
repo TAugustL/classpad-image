@@ -90,7 +90,7 @@
   The C2B file format is a bit more complicated than the C2P format:
   <ul>
     <li>
-      the file starts again with a header with files changing depending on your file size
+      the file starts again with a header with some bytes changing depending on your file size
     </li>
     <li>
       following the header, there are four bytes containing the size of the following compressed picture
