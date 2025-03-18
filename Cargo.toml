@@ -1,7 +1,7 @@
 [package]
 name = "classpad-image"
 version = "0.1.0"
-license = "MIT or Apache-2.0"
+license = "MIT OR Apache-2.0"
 edition = "2021"
 description = "A package to convert images to C2P and C2B files."
 repository = "https://github.com/TAugustL/classpad-image"
