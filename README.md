@@ -21,25 +21,25 @@
     <li>
       <p>Into C2P: enter the created folder, in your terminal enter:</p>
       
-      cargo run --example clt c2p [path/to/image.png] [target/path/image.c2p]"
+      cargo run --example clt c2p [path/to/image.png] [target/path/image.c2p]
       
   </li>
   <li>
       <p>Into C2B: enter the created folder, in your terminal enter:</p>
       
-      cargo run --example clt c2b [path/to/image1.png] [path/to/image2.png] [path/to/image3.png] [target/path/image.c2b]"
+      cargo run --example clt c2b [path/to/image1.png] [path/to/image2.png] [path/to/image3.png] [target/path/image.c2b]
       
   </li>
   <li>
       <p>From C2P: enter the created folder, in your terminal enter:</p>
       
-      cargo run --example clt imgp [target/path/image.c2p] [path/to/image.png]"
+      cargo run --example clt imgp [target/path/image.c2p] [path/to/image.png]
       
   </li>
   <li>
       <p>From C2B: enter the created folder, in your terminal enter:</p>
       
-      cargo run --example clt imgb [target/path/image.c2b] [path/to/image.png]"
+      cargo run --example clt imgb [target/path/image.c2b] [path/to/image.png]
       
   </li>
   </ol>
