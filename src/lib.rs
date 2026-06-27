@@ -1,18 +1,18 @@
 //! Image converter for the Casio fx-CP400 calculator.
 //!
 //! Provides functions to convert an image with a common format (PNG, JPG, WEBP, BMP) into a C2P file, or multiple image files into a C2B animation file.
-//! Also provides functions to convert C2P and C2B files back into more common formats.
+//! Also provides functions to convert C2P and C2B files back into the mentioned common formats.
 
 use image::{GenericImageView, Pixel};
-use std::error::Error;
+use std::{error::Error, path::Path};
 
 /// The largest possible image width on the fx-CP400.
-/// MAX_IMAGE_WIDTH is equal to 310 (0x136).
-pub const MAX_IMAGE_WIDTH: u32 = 0x136; // 310
+/// MAX_IMAGE_WIDTH is equal to 310 pixels (0x136).
+pub const MAX_IMAGE_WIDTH: u32 = 0x136;
 
 /// The largest possible image height on the fx-CP400.
-/// MAX_IMAGE_HEIGHT is equal to 401 (0x191).
-pub const MAX_IMAGE_HEIGHT: u32 = 0x191; // 401
+/// MAX_IMAGE_HEIGHT is equal to 401 pixels (0x191).
+pub const MAX_IMAGE_HEIGHT: u32 = 0x191;
 
 /// Function to convert an image to C2B.
 ///
@@ -22,19 +22,20 @@ pub const MAX_IMAGE_HEIGHT: u32 = 0x191; // 401
 ///
 /// Example:
 /// ```
-/// let paths: Vec<String> = vec![String::from("path/to/file1.png"), String::from("path/to/file2.png")];
-/// convert_img_to_c2b(paths, String::from("path/to/destination.c2b")).unwrap();
+/// let paths: Vec<&str> = vec!["path/to/file1.png", "path/to/file2.png"];
+/// convert_imgs_to_c2b(paths, "path/to/destination.c2b").unwrap();
 /// ```
-pub fn convert_img_to_c2b(
-    image_paths: Vec<String>,
-    destination: String,
-) -> Result<(), Box<dyn Error>> {
+pub fn convert_imgs_to_c2b<T, S>(image_paths: Vec<T>, destination: S) -> Result<(), Box<dyn Error>>
+where
+    T: AsRef<Path> + Clone,
+    S: AsRef<Path> + Clone,
+{
     if image_paths.len() < 2 {
         eprintln!("At least two images have to be supplied!");
         return Ok(());
     }
 
-    let image = image::ImageReader::open(image_paths[0].clone())
+    let image = image::ImageReader::open(&image_paths[0])
         .expect("Failed to open image!")
         .decode()
         .expect("Failed to decode image!");
@@ -58,17 +59,17 @@ pub fn convert_img_to_c2b(
             image
         };
 
-        let img_data = bitmap_to_rgb565_data(image.clone());
+        let img_data = bitmap_to_rgb565(&image);
         let compressed_img_data = compress(img_data);
 
         // Segment length
         let f = compressed_img_data.len();
-        let f4 = f >> 24 & 0xFF;
-        let f3 = f >> 16 & 0xFF;
-        let f2 = f >> 8 & 0xFF;
-        let f1 = f & 0xFF;
+        let f4 = ((f >> 24) & 0xFF) as u8;
+        let f3 = ((f >> 16) & 0xFF) as u8;
+        let f2 = ((f >> 8) & 0xFF) as u8;
+        let f1 = (f & 0xFF) as u8;
 
-        images_data.extend_from_slice(&[f4 as u8, f3 as u8, f2 as u8, f1 as u8]);
+        images_data.extend_from_slice(&[f4, f3, f2, f1]);
         images_data.extend_from_slice(&compressed_img_data);
     }
     let header = &get_c2b_header(
@@ -96,9 +97,13 @@ pub fn convert_img_to_c2b(
 /// Example:
 /// ```
 /// let path: &str = "path/to/file.png";
-/// convert_img_to_c2p(path, String::from("path/to/destination.c2p")).unwrap();
+/// convert_img_to_c2p(path, "path/to/destination.c2p").unwrap();
 /// ```
-pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
+pub fn convert_img_to_c2p<T, S>(image_path: T, destination: S) -> Result<(), Box<dyn Error>>
+where
+    T: AsRef<Path> + Clone,
+    S: AsRef<Path> + Clone,
+{
     let image = image::ImageReader::open(image_path)
         .expect("Failed to open image!")
         .decode()
@@ -117,7 +122,7 @@ pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), B
         image
     };
 
-    let img_data = bitmap_to_rgb565_data(image.clone());
+    let img_data = bitmap_to_rgb565(&image);
     let compressed_img_data = compress(img_data);
 
     let header = &get_c2p_header(
@@ -146,9 +151,13 @@ pub fn convert_img_to_c2p(image_path: &str, destination: String) -> Result<(), B
 /// Example:
 /// ```
 /// let path: &str = "path/to/file.c2p";
-/// convert_c2p_to_img(path, String::from("path/to/destination.png")).unwrap();
+/// convert_c2p_to_img(path, "path/to/destination.png").unwrap();
 /// ```
-pub fn convert_c2p_to_img(c2p_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
+pub fn convert_c2p_to_img<T, S>(c2p_path: T, destination: S) -> Result<(), Box<dyn Error>>
+where
+    T: AsRef<Path> + Clone,
+    S: AsRef<Path> + Clone,
+{
     let c2p_data: Vec<u8> = std::fs::read(c2p_path)?;
     let (header, slice) = c2p_data.split_at(0xDC);
     let (compressed_data, _footer) = slice.split_at(slice.len() - 0x17C);
@@ -199,9 +208,13 @@ pub fn convert_c2p_to_img(c2p_path: &str, destination: String) -> Result<(), Box
 /// Example:
 /// ```
 /// let path: &str = "path/to/file.c2b";
-/// convert_c2p_to_img(path, String::from("path/to/destination.png")).unwrap();
+/// convert_c2p_to_img(path, "path/to/destination.png").unwrap();
 /// ```
-pub fn convert_c2b_to_imgs(c2b_path: &str, destination: String) -> Result<(), Box<dyn Error>> {
+pub fn convert_c2b_to_imgs<T, S>(c2b_path: T, destination: S) -> Result<(), Box<dyn Error>>
+where
+    T: AsRef<Path> + Clone,
+    S: AsRef<Path> + Clone,
+{
     let c2b_data: Vec<u8> = std::fs::read(c2b_path)?;
     let (header, data) = c2b_data.split_at(0xD8);
 
@@ -247,14 +260,24 @@ pub fn convert_c2b_to_imgs(c2b_path: &str, destination: String) -> Result<(), Bo
         }
 
         let tmp = image_block_len;
-        image_block_len = (((data[offset + image_block_len + 0x00] as u32) << 24)
+        image_block_len = (((data[offset + image_block_len] as u32) << 24)
             + ((data[offset + image_block_len + 0x01] as u32) << 16)
             + ((data[offset + image_block_len + 0x02] as u32) << 8)
             + (data[offset + image_block_len + 0x03] as u32)) as usize;
         offset += tmp + 4;
 
-        let (file_dest, ext) = destination.rsplit_once('.').unwrap();
-        let destination = format!("{file_dest}{index}.{ext}");
+        let path: &Path = destination.as_ref();
+        let file_dest: &str = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default();
+        let extension: &str = path
+            .extension()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default();
+        let destination = format!("{file_dest}{index}.{extension}");
         index += 1;
 
         img_buffer.save(&destination)?;
@@ -264,11 +287,10 @@ pub fn convert_c2b_to_imgs(c2b_path: &str, destination: String) -> Result<(), Bo
 }
 
 /// Function to scale the initial image dimensions to fit into the maximum image scale.
-fn fit_image_dimensions(width: u32, height: u32) -> (u32, u32) {
+const fn fit_image_dimensions(width: u32, height: u32) -> (u32, u32) {
     let (mut new_width, mut new_height) = (width, height);
 
     if width > MAX_IMAGE_WIDTH || height > MAX_IMAGE_HEIGHT {
-        eprintln!("Image too big! scaling down...");
         if width < height {
             let aspect_ratio: f32 = width as f32 / height as f32;
             new_height = MAX_IMAGE_HEIGHT;
@@ -278,19 +300,19 @@ fn fit_image_dimensions(width: u32, height: u32) -> (u32, u32) {
             new_width = MAX_IMAGE_WIDTH;
             new_height = (aspect_ratio * new_width as f32) as u32;
         }
-
-        eprintln!("New size: {} x {}", new_width, new_height);
     }
 
     (new_width, new_height)
 }
 
 /// Function to convert the color data of the image into the RGB565 color format.
-fn bitmap_to_rgb565_data(image: image::DynamicImage) -> Vec<u8> {
-    let mut image_data = Vec::new();
+fn bitmap_to_rgb565(image: &image::DynamicImage) -> Vec<u8> {
+    let w = image.width();
+    let h = image.height();
+    let mut image_data = Vec::with_capacity((w * h) as usize * 2);
 
-    for y in 0..image.height() {
-        for x in 0..image.width() {
+    for y in 0..h {
+        for x in 0..w {
             let c = image.get_pixel(x, y).to_rgb().0;
 
             let (r, g, b) = (
@@ -311,7 +333,7 @@ fn bitmap_to_rgb565_data(image: image::DynamicImage) -> Vec<u8> {
 }
 
 /// Function that converts the given range to correctly display the bytes.
-fn convert_range(
+const fn convert_range(
     original_start: usize,
     original_end: usize,
     new_start: usize,
@@ -324,7 +346,8 @@ fn convert_range(
 
 /// Compresses the given image data with the default zlib compression.
 fn compress(input: Vec<u8>) -> Vec<u8> {
-    miniz_oxide::deflate::compress_to_vec_zlib(&input, 6)
+    use miniz_oxide::deflate;
+    deflate::compress_to_vec_zlib(&input, deflate::CompressionLevel::DefaultLevel as u8)
 }
 
 /// Function that returns the C2P file header, with certain bytes changed depending on the file size.
